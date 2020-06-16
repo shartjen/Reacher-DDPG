@@ -5,7 +5,7 @@ from collections import namedtuple, deque
 import time
 
 from model import Actor, Critic
-# from colorama import Fore, Back, Style 
+from colorama import Fore, Back, Style 
 
 import torch
 import torch.nn.functional as F
@@ -56,6 +56,7 @@ class ddpg_Agent():
         self.critic_learning_rate = config['critic_learning_rate']
         self.actor_learning_rate = config['actor_learning_rate']
         self.seed = (config['seed'])
+        self.noise_scale = 1
         # Some debug flags
         self.DoDebugEpisodeLists = False        
         
@@ -81,6 +82,24 @@ class ddpg_Agent():
         if len(self.memory) > self.batch_size:
             experiences = self.memory.sample()
             self.learn(experiences, self.gamma)
+            
+    def update_noise_scale(self, cur_reward, scale_min = 0.2, scale_noise=False):
+        """ If scale_noise == True the self.noise_scale will be decreased in relation to rewards
+            Currently hand coded  as rewards go up noise_scale will go down from 1 to scale_min"""
+        
+        if scale_noise:
+            rewlow = 2 # below rewlow noise_scale is 1 from there on it increases linearly down to scale_min + 0.5*(1 - scale_min) until rewhigh is reached
+            rewhigh = 10 # above rewhigh noise_scale falls linearly down to scale_min until rewrd = 30 is reached. Beyond 30 it stays at scale_min
+            if cur_reward > rewlow:
+                if cur_reward < rewhigh:
+                    self.noise_scale = (1 - scale_min)*(0.5*(rewhigh-cur_reward)/(rewhigh - rewlow) + 0.5) + scale_min
+                else:
+                    self.noise_scale = (1 - scale_min)*np.min(0.5*(30-cur_reward)/((30-rewhigh)),0) + scale_min
+                    
+            print('Updated noise scale to : ',self.noise_scale)
+                
+        return                    
+        
 
     def act(self, state, add_noise=True):
         """Returns actions for given state as per current policy."""
@@ -90,11 +109,14 @@ class ddpg_Agent():
             action = self.actor_local(state).cpu().data.numpy()
         self.actor_local.train()
         if add_noise:
-            action += self.noise.sample()
+            action += self.noise_scale * self.noise.sample()
             # ToDo check if tanh works better
         return np.clip(action, -1, 1)
 
     def train(self):
+        if True:
+            filename = 'trained_reacher_e50.pth'
+            self.load_agent(filename)
         all_rewards = []
         reward_window = deque(maxlen=100)
         print('Running on device : ',device)
@@ -114,17 +136,8 @@ class ddpg_Agent():
                 env_info = self.env.step(action)[self.brain_name]
                 next_state = env_info.vector_observations
                 reward = np.asarray(env_info.rewards)
-                if False:
-                    if sum(reward) > 0.001:
-                        print('-----------------------------------------------------')
-                        print('-----------------------------------------------------')
-                        print('-----------------------------------------------------')
-                        print(env_info.rewards)
-                    print(reward)
-                    print(done)
-                    print(type(next_state))
                 done = np.asarray(env_info.local_done)
-                np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
+                # np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
                 # print('Episode {} step {} taken action {} reward {} and done is {}'.format(i_episode,t,action,reward,done))
                 # increment stuff
                 t += 1
@@ -139,12 +152,17 @@ class ddpg_Agent():
             reward_window.append(np.mean(total_reward))
             
             # Output Episode info : 
-            #if total_reward < 0.001:
             toc = time.time()
-            print('Episode {} || Total Reward : {:6.3f} || average reward : {:6.3f} || Used {:5.3f} seconds'.format(i_episode,np.mean(total_reward),np.mean(reward_window),toc-tic))
-            # else:
-                # print(Back.RED + 'Episode {} || Total Reward : {:6.3f} || average reward : {:6.3f}'.format(i_episode,total_reward,np.mean(reward_window)))
-                # print(Style.RESET_ALL)
+            self.update_noise_scale(np.mean(reward_window))
+            if not (i_episode % 25 == 0):
+                print('Episode {} || Total Reward : {:6.3f} || average reward : {:6.3f} || Used {:5.3f} seconds, mem : {}'.format(i_episode,np.mean(total_reward),np.mean(reward_window),toc-tic,len(self.memory)))
+            else:
+                print(Back.RED + 'Episode {} || Total Reward : {:6.3f} || average reward : {:6.3f}'.format(i_episode,np.mean(total_reward),np.mean(reward_window)))
+                print(Style.RESET_ALL)
+                
+            if i_episode == 50:
+                self.save_agent(i_episode)
+        # for i_episode
             
         return all_rewards
 
@@ -208,11 +226,31 @@ class ddpg_Agent():
         """
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
+            
+    def save_agent(self,i_episode):
+        filename = 'trained_reacher_e'+str(i_episode)+'.pth'
+        torch.save({
+            'critic_local': self.critic_local.state_dict(),
+            'critic_target': self.critic_target.state_dict(),
+            'actor_local': self.actor_local.state_dict(),
+            'actor_target': self.actor_target.state_dict(),
+            }, filename)
+        
+        print('Saved Networks in ',filename)
+        return
+        
+    def load_agent(self,filename):
+        savedata = torch.load(filename)
+        self.critic_local.load_state_dict(savedata['critic_local'])
+        self.critic_target.load_state_dict(savedata['critic_target'])
+        self.actor_local.load_state_dict(savedata['actor_local'])
+        self.actor_target.load_state_dict(savedata['actor_target'])
+        return
 
 class OUNoise:
     """Ornstein-Uhlenbeck process."""
 
-    def __init__(self, size, seed, mu=0., theta=0.15, sigma=0.2):
+    def __init__(self, size, seed, mu=0., theta=0.15, sigma=0.1):
         """Initialize parameters and noise process."""
         self.mu = mu * np.ones(size)
         self.theta = theta
