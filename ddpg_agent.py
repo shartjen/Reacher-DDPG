@@ -57,6 +57,7 @@ class ddpg_Agent():
         self.actor_learning_rate = config['actor_learning_rate']
         self.seed = (config['seed'])
         self.noise_scale = 1
+        self.noise_sigma = 0.1
         # Some debug flags
         self.DoDebugEpisodeLists = False        
         
@@ -114,8 +115,8 @@ class ddpg_Agent():
         return np.clip(action, -1, 1)
 
     def train(self):
-        if True:
-            filename = 'trained_reacher_e50.pth'
+        if False:
+            filename = 'trained_reacher_a_e100.pth'
             self.load_agent(filename)
         all_rewards = []
         reward_window = deque(maxlen=100)
@@ -153,6 +154,8 @@ class ddpg_Agent():
             
             # Output Episode info : 
             toc = time.time()
+            if (i_episode == 100):
+                self.stable_update()
             self.update_noise_scale(np.mean(reward_window))
             if not (i_episode % 25 == 0):
                 print('Episode {} || Total Reward : {:6.3f} || average reward : {:6.3f} || Used {:5.3f} seconds, mem : {}'.format(i_episode,np.mean(total_reward),np.mean(reward_window),toc-tic,len(self.memory)))
@@ -160,7 +163,7 @@ class ddpg_Agent():
                 print(Back.RED + 'Episode {} || Total Reward : {:6.3f} || average reward : {:6.3f}'.format(i_episode,np.mean(total_reward),np.mean(reward_window)))
                 print(Style.RESET_ALL)
                 
-            if i_episode == 50:
+            if (i_episode % 50 == 0):
                 self.save_agent(i_episode)
         # for i_episode
             
@@ -168,6 +171,13 @@ class ddpg_Agent():
 
     def reset(self):
         self.noise.reset()
+        
+    def stable_update(self):
+        """ Update Hyperparameters which proved more stable """
+        self.buffer_size = 400000
+        self.memory.enlarge(self.buffer_size)
+        self.noise_sigma = 0.05
+        self.noise.sigma = 0.05
 
     def learn(self, experiences, gamma):
         """Update policy and value parameters using given batch of experience tuples.
@@ -284,6 +294,15 @@ class ReplayBuffer:
         self.batch_size = batch_size
         self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
         self.seed = random.seed(seed)
+        
+    def enlarge(self, newsize):
+        # Copy everything to new deque and replace
+        newmemory = deque(maxlen=newsize)
+        newmemory.extend(self.memory)
+        self.buffer_size = newsize
+        self.memory.clear()
+        self.memory = newmemory
+        print('New Memory length : ',len(self.memory))
     
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
